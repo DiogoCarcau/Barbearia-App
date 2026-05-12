@@ -1,0 +1,6 @@
+import { StripeProvider } from '@stripe/stripe-react-native';
+import type React from 'react';
+
+export function StripeRoot({ children }: { children: React.ReactNode }) {
+  return <StripeProvider publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? ''}>{children}</StripeProvider>;
+}

@@ -1,133 +1,236 @@
 create extension if not exists pgcrypto;
 
-create table public.utilizadores (
-  id uuid primary key references auth.users(id) on delete cascade,
-  nome text not null default '',
-  email text unique not null,
-  telemovel text,
-  data_nascimento date,
-  avatar text,
-  total_visitas int not null default 0,
-  nivel_fidelidade text not null default 'Bronze' check (nivel_fidelidade in ('Bronze','Prata','Ouro')),
-  total_gasto numeric(10,2) not null default 0,
-  membro_desde timestamptz not null default now(),
-  push_token text,
-  idioma text not null default 'pt' check (idioma in ('pt','en')),
-  notificacoes_ativas boolean not null default true
+create type public.plano_tenant as enum ('basic', 'pro');
+create type public.nivel_fidelidade as enum ('bronze', 'prata', 'ouro', 'platina');
+create type public.categoria_servico as enum ('corte', 'barba', 'sobrancelha', 'tratamento', 'outro');
+create type public.estado_agendamento as enum ('pendente', 'confirmado', 'concluido', 'cancelado', 'nao_compareceu');
+create type public.motivo_bloqueio as enum ('folga', 'ferias', 'manutencao', 'outro');
+create type public.tipo_foto_feed as enum ('antes_depois', 'trabalho', 'equipa', 'espaco');
+
+create table public.tenants (
+  id uuid primary key default gen_random_uuid(),
+  nome text not null,
+  slug text not null unique,
+  logo_url text,
+  cor_primaria text not null default '#C7A85A',
+  cor_secundaria text not null default '#111214',
+  descricao text,
+  morada text,
+  telefone text,
+  email_contacto text,
+  instagram_url text,
+  facebook_url text,
+  stripe_customer_id text,
+  plano public.plano_tenant not null default 'basic',
+  ativo boolean not null default true,
+  criado_em timestamptz not null default now()
+);
+
+create table public.admin_tenants (
+  id uuid primary key default gen_random_uuid(),
+  utilizador_id uuid not null references auth.users(id) on delete cascade,
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  role text not null default 'owner' check (role in ('owner', 'manager', 'staff')),
+  criado_em timestamptz not null default now(),
+  unique (utilizador_id, tenant_id)
 );
 
 create table public.localizacoes (
   id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
   nome text not null,
-  descricao text,
   morada text not null,
-  telefone text,
-  instagram_url text,
-  facebook_url text,
   latitude numeric(10,7),
   longitude numeric(10,7),
+  telefone text,
   horario jsonb not null default '{}'::jsonb,
-  foto_capa text,
-  ativa boolean not null default true,
-  created_at timestamptz not null default now()
-);
-
-create table public.servicos (
-  id uuid primary key default gen_random_uuid(),
-  nome text not null,
-  nome_en text,
-  preco numeric(10,2) not null,
-  duracao_min int not null,
+  fotos text[] not null default '{}',
   ativo boolean not null default true,
-  created_at timestamptz not null default now()
+  criado_em timestamptz not null default now()
 );
 
 create table public.barbeiros (
   id uuid primary key default gen_random_uuid(),
-  localizacao_id uuid not null references public.localizacoes(id) on delete cascade,
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  localizacao_id uuid references public.localizacoes(id) on delete set null,
   nome text not null,
+  foto_url text,
   bio text,
-  foto text,
-  disponibilidade jsonb not null default '{}'::jsonb,
+  especialidades text[] not null default '{}',
+  horario_disponivel jsonb not null default '{}'::jsonb,
   ativo boolean not null default true,
-  created_at timestamptz not null default now()
+  ordem int not null default 0,
+  criado_em timestamptz not null default now()
 );
 
-create table public.fotos_local (
+create table public.servicos (
   id uuid primary key default gen_random_uuid(),
-  localizacao_id uuid not null references public.localizacoes(id) on delete cascade,
-  url text not null,
-  categoria text not null check (categoria in ('progresso','resultado','equipa','espaco')),
-  legenda text,
-  created_at timestamptz not null default now()
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  nome text not null,
+  descricao text,
+  duracao_minutos int not null check (duracao_minutos > 0),
+  preco numeric(10,2) not null check (preco >= 0),
+  categoria public.categoria_servico not null default 'outro',
+  foto_url text,
+  ativo boolean not null default true,
+  ordem int not null default 0,
+  criado_em timestamptz not null default now()
 );
 
-create table public.disponibilidade_barbeiro (
-  id uuid primary key default gen_random_uuid(),
-  barbeiro_id uuid not null references public.barbeiros(id) on delete cascade,
-  data date not null,
-  slot time not null,
-  disponivel boolean not null default true,
-  motivo_bloqueio text,
-  unique (barbeiro_id, data, slot)
+create table public.utilizadores (
+  id uuid primary key references auth.users(id) on delete cascade,
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  nome text not null,
+  email text not null,
+  telefone text,
+  data_nascimento date,
+  avatar_url text,
+  total_visitas int not null default 0,
+  total_gasto numeric(10,2) not null default 0,
+  nivel_fidelidade public.nivel_fidelidade not null default 'bronze',
+  pontos int not null default 0,
+  criado_em timestamptz not null default now(),
+  unique (tenant_id, email)
 );
 
 create table public.agendamentos (
   id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
   utilizador_id uuid references public.utilizadores(id) on delete set null,
   localizacao_id uuid not null references public.localizacoes(id),
-  barbeiro_id uuid not null references public.barbeiros(id),
+  barbeiro_id uuid references public.barbeiros(id),
   servico_id uuid not null references public.servicos(id),
   data date not null,
-  hora time not null,
-  estado text not null check (estado in ('pendente','confirmado','cancelado','concluido')) default 'pendente',
-  cancelavel_ate timestamptz,
-  stripe_payment_intent text,
+  hora_inicio time not null,
+  hora_fim time not null,
+  estado public.estado_agendamento not null default 'pendente',
+  notas_cliente text,
+  notas_admin text,
+  preco_cobrado numeric(10,2) not null default 0,
+  stripe_payment_intent_id text,
   stripe_status text,
-  notas text,
-  created_at timestamptz not null default now(),
-  unique (barbeiro_id, data, hora)
+  criado_em timestamptz not null default now()
 );
 
-create index agendamentos_utilizador_idx on public.agendamentos(utilizador_id, data desc);
-create index agendamentos_barbeiro_dia_idx on public.agendamentos(barbeiro_id, data, hora);
-create index fotos_local_feed_idx on public.fotos_local(localizacao_id, created_at desc);
+create table public.disponibilidade_bloqueada (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  barbeiro_id uuid references public.barbeiros(id) on delete cascade,
+  localizacao_id uuid references public.localizacoes(id) on delete cascade,
+  data_inicio timestamptz not null,
+  data_fim timestamptz not null,
+  motivo public.motivo_bloqueio not null default 'outro',
+  criado_em timestamptz not null default now(),
+  check (data_fim > data_inicio)
+);
 
-alter table public.utilizadores enable row level security;
+create table public.fotos_feed (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  localizacao_id uuid references public.localizacoes(id) on delete set null,
+  url text not null,
+  legenda text,
+  tipo public.tipo_foto_feed not null default 'trabalho',
+  ordem int not null default 0,
+  ativo boolean not null default true,
+  criado_em timestamptz not null default now()
+);
+
+create table public.notificacoes (
+  id uuid primary key default gen_random_uuid(),
+  utilizador_id uuid not null references public.utilizadores(id) on delete cascade,
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  titulo text not null,
+  mensagem text not null,
+  lida boolean not null default false,
+  tipo text not null default 'geral',
+  criado_em timestamptz not null default now()
+);
+
+create index tenants_slug_idx on public.tenants(slug);
+create index localizacoes_tenant_idx on public.localizacoes(tenant_id);
+create index barbeiros_tenant_idx on public.barbeiros(tenant_id);
+create index barbeiros_localizacao_idx on public.barbeiros(localizacao_id);
+create index servicos_tenant_idx on public.servicos(tenant_id);
+create index utilizadores_tenant_idx on public.utilizadores(tenant_id);
+create index agendamentos_tenant_idx on public.agendamentos(tenant_id);
+create index agendamentos_data_idx on public.agendamentos(data);
+create index agendamentos_estado_idx on public.agendamentos(estado);
+create index agendamentos_utilizador_idx on public.agendamentos(utilizador_id);
+create index agendamentos_barbeiro_data_idx on public.agendamentos(barbeiro_id, data);
+create index disponibilidade_tenant_idx on public.disponibilidade_bloqueada(tenant_id);
+create index disponibilidade_periodo_idx on public.disponibilidade_bloqueada(data_inicio, data_fim);
+create index fotos_feed_tenant_idx on public.fotos_feed(tenant_id);
+create index notificacoes_tenant_idx on public.notificacoes(tenant_id);
+create index notificacoes_utilizador_idx on public.notificacoes(utilizador_id);
+
+alter table public.tenants enable row level security;
+alter table public.admin_tenants enable row level security;
 alter table public.localizacoes enable row level security;
-alter table public.servicos enable row level security;
 alter table public.barbeiros enable row level security;
-alter table public.fotos_local enable row level security;
-alter table public.disponibilidade_barbeiro enable row level security;
+alter table public.servicos enable row level security;
+alter table public.utilizadores enable row level security;
 alter table public.agendamentos enable row level security;
+alter table public.disponibilidade_bloqueada enable row level security;
+alter table public.fotos_feed enable row level security;
+alter table public.notificacoes enable row level security;
 
-create policy "public read active locations" on public.localizacoes for select using (ativa = true);
-create policy "public read active services" on public.servicos for select using (ativo = true);
-create policy "public read active barbers" on public.barbeiros for select using (ativo = true);
-create policy "public read feed photos" on public.fotos_local for select using (true);
-create policy "public read availability" on public.disponibilidade_barbeiro for select using (true);
+create or replace function public.is_tenant_admin(target_tenant uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.admin_tenants
+    where tenant_id = target_tenant and utilizador_id = auth.uid()
+  );
+$$;
 
-create policy "users read own profile" on public.utilizadores for select using (auth.uid() = id);
-create policy "users update own profile" on public.utilizadores for update using (auth.uid() = id);
-create policy "users insert own profile" on public.utilizadores for insert with check (auth.uid() = id);
+create or replace function public.current_user_tenant(target_tenant uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.utilizadores
+    where tenant_id = target_tenant and id = auth.uid()
+  );
+$$;
 
-create policy "users read own appointments" on public.agendamentos for select using (auth.uid() = utilizador_id);
-create policy "users create own appointments" on public.agendamentos for insert with check (auth.uid() = utilizador_id);
-create policy "users cancel own appointments" on public.agendamentos for update using (auth.uid() = utilizador_id) with check (estado in ('cancelado','pendente','confirmado'));
+create policy "read active tenants" on public.tenants for select using (ativo = true or public.is_tenant_admin(id));
+create policy "admins update own tenant" on public.tenants for update using (public.is_tenant_admin(id));
+create policy "authenticated create tenant" on public.tenants for insert with check (auth.uid() is not null);
 
-insert into public.localizacoes (id, nome, descricao, morada, telefone, instagram_url, facebook_url, latitude, longitude, horario, foto_capa) values
-('11111111-1111-4111-8111-111111111111', 'Barbearia Central', 'Cortes clássicos, degradês e barba no centro da cidade.', 'Rua Garrett 32, Lisboa', '+351910000000', 'https://instagram.com/xbbarbearia', 'https://facebook.com/xbbarbearia', 38.7105000, -9.1418000, '{"seg-sab":"09:00-20:00"}', 'https://images.unsplash.com/photo-1621605815971-fbc98d665033?w=1200'),
-('22222222-2222-4222-8222-222222222222', 'Studio Norte', 'Espaço moderno para cabelo, barba e sobrancelha.', 'Rua das Flores 88, Porto', '+351920000000', 'https://instagram.com/xbbarbearia', 'https://facebook.com/xbbarbearia', 41.1457000, -8.6109000, '{"ter-dom":"10:00-21:00"}', 'https://images.unsplash.com/photo-1512690459411-b9245aed614b?w=1200');
+create policy "admins see memberships" on public.admin_tenants for select using (utilizador_id = auth.uid() or public.is_tenant_admin(tenant_id));
+create policy "owners manage memberships" on public.admin_tenants for all using (public.is_tenant_admin(tenant_id)) with check (public.is_tenant_admin(tenant_id));
 
-insert into public.servicos (id, nome, nome_en, preco, duracao_min) values
-('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'Corte normal', 'Classic cut', 18, 30),
-('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2', 'Degradê', 'Fade', 22, 40),
-('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3', 'Cabelo + Barba', 'Hair + Beard', 32, 60),
-('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4', 'Barba à máquina', 'Machine beard trim', 12, 20),
-('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5', 'Tratamento de sobrancelha', 'Eyebrow treatment', 8, 15),
-('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6', 'Sobrancelha à navalha', 'Razor eyebrow detail', 10, 15);
+create policy "tenant public read locations" on public.localizacoes for select using (ativo = true or public.is_tenant_admin(tenant_id));
+create policy "admins manage locations" on public.localizacoes for all using (public.is_tenant_admin(tenant_id)) with check (public.is_tenant_admin(tenant_id));
 
-insert into public.barbeiros (id, localizacao_id, nome, bio, foto, disponibilidade) values
-('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1', '11111111-1111-4111-8111-111111111111', 'Tiago Mendes', 'Especialista em degradê e cortes clássicos.', 'https://images.unsplash.com/photo-1618077360395-f3068be8e001?w=500', '{"seg-sex":"09:00-18:00"}'),
-('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', '11111111-1111-4111-8111-111111111111', 'Mara Silva', 'Barba, cabelo e detalhes de sobrancelha.', 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=500', '{"ter-sab":"11:00-20:00"}'),
-('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3', '22222222-2222-4222-8222-222222222222', 'Rui Costa', 'Cortes modernos e finalização premium.', 'https://images.unsplash.com/photo-1560250097-0b93528c311a?w=500', '{"ter-dom":"10:00-19:00"}');
+create policy "tenant public read barbers" on public.barbeiros for select using (ativo = true or public.is_tenant_admin(tenant_id));
+create policy "admins manage barbers" on public.barbeiros for all using (public.is_tenant_admin(tenant_id)) with check (public.is_tenant_admin(tenant_id));
+
+create policy "tenant public read services" on public.servicos for select using (ativo = true or public.is_tenant_admin(tenant_id));
+create policy "admins manage services" on public.servicos for all using (public.is_tenant_admin(tenant_id)) with check (public.is_tenant_admin(tenant_id));
+
+create policy "users read own profile" on public.utilizadores for select using (id = auth.uid() or public.is_tenant_admin(tenant_id));
+create policy "users insert own profile" on public.utilizadores for insert with check (id = auth.uid());
+create policy "users update own profile" on public.utilizadores for update using (id = auth.uid() or public.is_tenant_admin(tenant_id)) with check (id = auth.uid() or public.is_tenant_admin(tenant_id));
+
+create policy "users and admins read appointments" on public.agendamentos for select using (utilizador_id = auth.uid() or public.is_tenant_admin(tenant_id));
+create policy "users create own appointments" on public.agendamentos for insert with check (utilizador_id = auth.uid() or public.is_tenant_admin(tenant_id));
+create policy "users update own cancellable appointments" on public.agendamentos for update using (utilizador_id = auth.uid() or public.is_tenant_admin(tenant_id)) with check (utilizador_id = auth.uid() or public.is_tenant_admin(tenant_id));
+
+create policy "public read blocked availability" on public.disponibilidade_bloqueada for select using (true);
+create policy "admins manage blocked availability" on public.disponibilidade_bloqueada for all using (public.is_tenant_admin(tenant_id)) with check (public.is_tenant_admin(tenant_id));
+
+create policy "tenant public read feed" on public.fotos_feed for select using (ativo = true or public.is_tenant_admin(tenant_id));
+create policy "admins manage feed" on public.fotos_feed for all using (public.is_tenant_admin(tenant_id)) with check (public.is_tenant_admin(tenant_id));
+
+create policy "users read own notifications" on public.notificacoes for select using (utilizador_id = auth.uid() or public.is_tenant_admin(tenant_id));
+create policy "users update own notifications" on public.notificacoes for update using (utilizador_id = auth.uid()) with check (utilizador_id = auth.uid());
+create policy "admins create notifications" on public.notificacoes for insert with check (public.is_tenant_admin(tenant_id));

@@ -5,7 +5,7 @@ import * as Notifications from 'expo-notifications';
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Image, ImageBackground, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import { MapPreview } from '../components/MapPreview';
 import { useApp } from '../contexts/AppContext';
 import { supabase } from '../services/supabase';
 
@@ -239,7 +239,7 @@ export const BookingFlowScreen = () => {
   const slots = ['09:30', '10:00', '11:30', '14:00', '16:30', '18:00'];
 
   const confirm = async () => {
-    if (notifications) {
+    if (notifications && Platform.OS !== 'web') {
       await Notifications.scheduleNotificationAsync({
         content: { title: 'Agendamento confirmado', body: `${serviceName(chosenService, lang)} - ${hour}` },
         trigger: null,
@@ -408,11 +408,7 @@ export const AboutScreen = () => {
         <Text style={[styles.cardTitle, { color: p.text }]}>Equipa</Text>
         {barbers.filter((barber) => barber.locationId === selected.id).map((barber) => <Text key={barber.id} style={[styles.summaryLine, { color: p.text }]}>{barber.name} · ★ {barber.rating}</Text>)}
       </Card>
-      {Platform.OS !== 'web' ? (
-        <MapView style={styles.map} initialRegion={{ ...selected.coords, latitudeDelta: 0.01, longitudeDelta: 0.01 }}>
-          <Marker coordinate={selected.coords} title={selected.name} description={selected.address} />
-        </MapView>
-      ) : null}
+      <MapPreview style={styles.map} latitude={selected.coords.latitude} longitude={selected.coords.longitude} title={selected.name} description={selected.address} />
       <Card>
         <Text style={[styles.summaryLine, { color: p.text }]}>{selected.address}</Text>
         <Text style={[styles.summaryLine, { color: p.text }]}>{selected.hours}</Text>
